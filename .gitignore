@@ -1,0 +1,17 @@
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+
+cdk.out/
+.cdk.staging/
+
+.python-version
+node_modules/
+
+.DS_Store
+.vscode/
+.idea/
+
+.env

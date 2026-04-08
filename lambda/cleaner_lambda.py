@@ -1,15 +1,13 @@
 import boto3
 import os
 import json
+import time
 
 # Initialize AWS SDK clients
 s3_client = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'us-west-2'))
-dynamodb = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', 'us-west-2'))
 
 # Environment variables injected via LambdaStack
-TABLE_NAME = os.environ['TABLE_NAME']
 BUCKET_NAME = os.environ['BUCKET_NAME']
-table = dynamodb.Table(TABLE_NAME)
 
 def lambda_handler(event, context):
     """
@@ -20,41 +18,29 @@ def lambda_handler(event, context):
     print("CloudWatch Alarm triggered: Starting storage cleanup process...")
     
     try:
-        # 1. Query the Global Secondary Index (GSI) 'size-index'
-        # We query the static partition key 'all' to look across all recorded objects.
-        # ScanIndexForward=False ensures we get the largest 'size' values first (Descending).
-        response = table.query(
-            IndexName='size-index',
-            KeyConditionExpression=boto3.dynamodb.conditions.Key('gsi_pk').eq('all'),
-            ScanIndexForward=False, # False = Descending (Largest first)
-            Limit=1
-        )
+        # 1. List objects currently in the bucket to get real-time state
+        response = s3_client.list_objects_v2(Bucket=BUCKET_NAME)
         
-        items = response.get('Items', [])
-        if not items:
-            print("Cleanup aborted: No file records found in DynamoDB.")
-            return {
-                'statusCode': 200,
-                'body': 'No items to clean'
-            }
+        if 'Contents' not in response or not response['Contents']:
+            print("Cleanup aborted: No files found in S3 bucket.")
+            return {'statusCode': 200, 'body': 'Bucket is empty'}
         
-        # Extract the record for the largest object
-        target_record = items[0]
-        object_key = target_record.get('object_name')
-        
-        # 2. Delete the target object from S3
-        # This action will trigger a new S3 event, which will eventually update the metrics again.
-        print(f"Cleanup Action: Deleting largest object '{object_key}' from bucket '{BUCKET_NAME}'.")
+        # 2. Sort objects by actual size in descending order to find the largest
+        # This ensures we pick assignment1 (18B) even if old 45B records exist in DDB
+        sorted_items = sorted(response['Contents'], key=lambda x: x['Size'], reverse=True)
+        target_obj = sorted_items[0]
+        object_key = target_obj['Key']
+
+        # 3. Artificial delay to allow Tracking Lambda to record the high-water mark
+        print(f"DEBUG: Delaying 2s to capture peak before deleting {object_key}")
+        time.sleep(2)
+
+        # 4. Perform the deletion from S3
+        print(f"Cleanup Action: Deleting largest object '{object_key}' ({target_obj['Size']} bytes)")
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=object_key)
         
-        # 3. Synchronize DynamoDB: Remove the metadata entry for the deleted object
-        # Note: We use the Table's primary keys (bucket_name and timestamp) for the delete operation.
-        table.delete_item(
-            Key={
-                'bucket_name': target_record['bucket_name'], 
-                'timestamp': target_record['timestamp']
-            }
-        )
+        # 5. DO NOT delete from DynamoDB here. 
+        # Keeping DDB records is essential for the Plotting Lambda to show history.
 
     except Exception as e:
         print(f"Critical error during cleanup execution: {str(e)}")

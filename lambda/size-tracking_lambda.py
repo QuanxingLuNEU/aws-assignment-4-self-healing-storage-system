@@ -2,6 +2,8 @@ import boto3
 import json
 from datetime import datetime, timezone
 import os
+from decimal import Decimal
+import time
 
 # Environment variables provided by CDK LambdaStack
 BUCKET_NAME = os.environ['BUCKET_NAME']
@@ -50,7 +52,7 @@ def lambda_handler(event, context):
             total_objects += 1
 
     # Generate UTC timestamp for DynamoDB Sort Key
-    timestamp = int(datetime.now(timezone.utc).timestamp())
+    timestamp = Decimal(str(time.time()))
 
     # Persistence layer: Store metadata in DynamoDB
     # 'gsi_pk' is used for the Global Secondary Index to allow sorting across all records
@@ -66,6 +68,14 @@ def lambda_handler(event, context):
     )
 
     print(f'Update successful: {total_size} bytes across {total_objects} objects.')
+    log_payload = {
+        "bucket_name": BUCKET_NAME,
+        "total_size": total_size,
+        "total_objects": total_objects,
+        "object_key": key,
+        "timestamp": str(datetime.now(timezone.utc))
+    }
+    print(json.dumps(log_payload))
 
     return {
         'statusCode': 200,

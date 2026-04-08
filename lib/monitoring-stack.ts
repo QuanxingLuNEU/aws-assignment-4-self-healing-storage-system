@@ -12,11 +12,13 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * when thresholds are breached.
  */
 interface MonitoringStackProps extends cdk.StackProps {
-  loggingLambdaName: string;
+  targetLambdaName: string;
   cleanerLambdaArn: string; 
 }
 
 export class MonitoringStack extends cdk.Stack {
+  public readonly alarm: cloudwatch.Alarm;
+
   constructor(scope: Construct, id: string, props: MonitoringStackProps) {
     super(scope, id, props);
 
@@ -27,29 +29,27 @@ export class MonitoringStack extends cdk.Stack {
     // 1. IMPORT RESOURCES:
     // We use Names and ARNs to reference resources from LambdaStack.
     // This technique breaks the circular dependency between Lambda and Monitoring.
-    const loggingLambda = lambda.Function.fromFunctionName(this, 'ImportedLogLambda', props.loggingLambdaName);
+    const loggingLambda = lambda.Function.fromFunctionName(this, 'ImportedLogLambda', props.targetLambdaName);
     
     // The Log Group name for any Lambda follows a standard AWS pattern
     const loggingLogGroup = logs.LogGroup.fromLogGroupName(
       this, 
       'ImportedLogGroup', 
-      `/aws/lambda/${props.loggingLambdaName}`
+      `/aws/lambda/${props.targetLambdaName}`
     );
     const cleanerLambda = lambda.Function.fromFunctionArn(this, 'ImportedCleanerLambda', props.cleanerLambdaArn);
 
     /**
      * 2. METRIC FILTER:
-     * This filter scans the JSON logs produced by LoggingLambda.
-     * It extracts the 'size_delta' value and transforms it into a CloudWatch Metric.
+     * This filter scans the JSON logs produced by size-tracking lambda.
+     * It extracts the 'total_size' value and transforms it into a CloudWatch Metric.
      */
     new logs.MetricFilter(this, 'SizeMetricFilter', {
       logGroup: loggingLogGroup,
       metricNamespace: metricNamespace,
       metricName: metricName,
-      // Look for logs containing the size_delta key
-      filterPattern: logs.FilterPattern.exists('$.size_delta'),
-      // The value to record is the delta (positive for uploads, negative for deletes)
-      metricValue: '$.size_delta', 
+      filterPattern: logs.FilterPattern.exists('$.total_size'),
+      metricValue: '$.total_size', 
     });
 
     /**
@@ -57,11 +57,11 @@ export class MonitoringStack extends cdk.Stack {
      * Monitors the 'Sum' of size_delta over a 1-minute period.
      * If the total exceeds 20 bytes (simulated threshold), the Alarm fires.
      */
-    const alarm = new cloudwatch.Alarm(this, 'TotalSizeAlarm', {
+    this.alarm = new cloudwatch.Alarm(this, 'TotalSizeAlarm', {
       metric: new cloudwatch.Metric({
         namespace: metricNamespace,
         metricName: metricName,
-        statistic: 'Sum', 
+        statistic: 'Maximum', 
         period: cdk.Duration.minutes(1),
       }),
       threshold: 20,
@@ -73,7 +73,7 @@ export class MonitoringStack extends cdk.Stack {
     cleanerLambda.addPermission('AllowCloudWatchAlarm', {
       action: 'lambda:InvokeFunction',
       principal: new iam.ServicePrincipal('lambda.alarms.cloudwatch.amazonaws.com'),
-      sourceArn: alarm.alarmArn,
+      sourceArn: this.alarm.alarmArn,
     });
 
     /**
@@ -81,7 +81,7 @@ export class MonitoringStack extends cdk.Stack {
      * Connects the Alarm to the Cleaner Lambda.
      * When the state becomes 'ALARM', CloudWatch invokes the Cleaner automatically.
      */
-    alarm.addAlarmAction(new cw_actions.LambdaAction(cleanerLambda));
+    this.alarm.addAlarmAction(new cw_actions.LambdaAction(cleanerLambda));
 
     // 5. SECONDARY ALARM: Monitors the health of the Logging Lambda itself
     new cloudwatch.Alarm(this, 'LoggingLambdaErrorAlarm', {

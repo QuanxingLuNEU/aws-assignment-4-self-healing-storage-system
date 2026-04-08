@@ -31,6 +31,10 @@ def lambda_handler(event, context):
             for s3_record in s3_event_wrap['Records']:
                 event_name = s3_record['eventName']
                 object_name = s3_record['s3']['object']['key']
+
+                if object_name == 'plot.png':
+                    print(f"Skipping monitoring for system file: {object_name}")
+                    continue
                 
                 # We calculate 'size_delta' to represent the change in bucket storage
                 size_delta = 0

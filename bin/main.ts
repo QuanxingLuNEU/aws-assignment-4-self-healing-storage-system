@@ -46,9 +46,9 @@ const lambdas = new LambdaStack(app, 'LambdaStack', {
 
 // 4. MONITORING STACK: The self-healing layer (Alarms & Metric Filters).
 // We pass function names and ARNs to break potential back-references to LambdaStack.
-new MonitoringStack(app, 'MonitoringStack', {
+const monitoring = new MonitoringStack(app, 'MonitoringStack', {
   env,
-  loggingLambdaName: lambdas.loggingLambda.functionName,
+  targetLambdaName: lambdas.sizeLambda.functionName,
   // Note: Cleaner requires the ARN for the Alarm Action to work correctly
   cleanerLambdaArn: lambdas.cleanerLambda.functionArn,
 });

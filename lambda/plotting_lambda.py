@@ -9,6 +9,7 @@ import io
 import base64
 from decimal import Decimal
 import os
+import time
 
 # Environment variables injected by CDK
 BUCKET_NAME = os.environ['BUCKET_NAME']
@@ -22,11 +23,11 @@ s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'us-west-2'))
 def lambda_handler(event, context):
     """
     Handler for Plotting Lambda.
-    Generates a PNG chart of bucket size changes over the last 10 seconds 
+    Generates a PNG chart of bucket size changes over the last 300 seconds 
     and adds a horizontal reference line for the historical maximum size.
     """
-    now = int(datetime.now(timezone.utc).timestamp())
-    time_window_start = now - 10
+    now = time.time()
+    time_window_start = Decimal(str(now - 300))
 
     # 1. Fetch recent records for the current bucket
     # We use the primary Partition Key (bucket_name) and Sort Key (timestamp)
@@ -36,7 +37,7 @@ def lambda_handler(event, context):
     )
     items = response.get('Items', [])
     # Ensure data points are sorted chronologically for the line plot
-    items.sort(key=lambda x: int(x['timestamp']))
+    items.sort(key=lambda x: float(x['timestamp']))
     
     if not items:
         return {
@@ -46,7 +47,7 @@ def lambda_handler(event, context):
         }
 
     # Prepare data for Matplotlib
-    timestamps = [datetime.fromtimestamp(int(i['timestamp']), tz=timezone.utc) for i in items]
+    timestamps = [datetime.fromtimestamp(float(i['timestamp']), tz=timezone.utc) for i in items]
     # DynamoDB numeric types are returned as Decimal; convert to int for plotting
     # Note: Ensure key name matches your tracking lambda (e.g., 'total_size')
     sizes = [int(i['total_size']) if isinstance(i['total_size'], Decimal) else i.get('total_size', 0) for i in items]
@@ -77,7 +78,7 @@ def lambda_handler(event, context):
     
     plt.xlabel('Time (UTC)')
     plt.ylabel('Size (Bytes)')
-    plt.title('Real-time Storage Monitor (Last 10s)')
+    plt.title('Real-time Storage Monitor (Last 300s)')
     plt.legend(loc='upper left')
     plt.grid(True, linestyle=':', alpha=0.6)
     plt.tight_layout()

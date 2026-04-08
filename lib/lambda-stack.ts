@@ -22,16 +22,26 @@ interface LambdaStackProps extends cdk.StackProps {
 export class LambdaStack extends cdk.Stack {
   // Expose functions for MonitoringStack to create Alarms
   public readonly driverLambda: lambda.Function
+  public readonly sizeLambda: lambda.Function;
   public readonly plotLambda: lambda.Function
-  public readonly loggingLambda: lambda.Function
   public readonly cleanerLambda: lambda.Function
   public readonly api: apigateway.RestApi
 
   constructor(scope: Construct, id: string, props: LambdaStackProps) {
     super(scope, id, props)
 
+    const sizeLambdaName = 'Assignment4-SizeTrackingLambda';
+    
+    const sizeLogGroup = new logs.LogGroup(this, 'SizeTrackingLogGroup', {
+      logGroupName: `/aws/lambda/${sizeLambdaName}`, 
+      retention: logs.RetentionDays.ONE_DAY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY, 
+    });
+
+
     // 1. SIZE TRACKING LAMBDA: Triggered by SQS to update DynamoDB metrics.
-    const sizeLambda = new lambda.Function(this, 'SizeTrackingLambda', {
+    this.sizeLambda = new lambda.Function(this, 'SizeTrackingLambda', {
+      functionName: sizeLambdaName,
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'size-tracking_lambda.lambda_handler',
       code: lambda.Code.fromAsset('lambda'),
@@ -39,34 +49,15 @@ export class LambdaStack extends cdk.Stack {
         TABLE_NAME: props.table.tableName,
         BUCKET_NAME: props.bucket.bucketName,
       },
+      logGroup: sizeLogGroup,
       timeout: cdk.Duration.seconds(30)
     })
 
-    sizeLambda.addEventSource(new lambdaEventSources.SqsEventSource(props.sizeQueue))
-    props.table.grantReadWriteData(sizeLambda)
-    props.bucket.grantRead(sizeLambda)
+    this.sizeLambda.addEventSource(new lambdaEventSources.SqsEventSource(props.sizeQueue))
+    props.table.grantReadWriteData(this.sizeLambda)
+    props.bucket.grantRead(this.sizeLambda)
 
-    // 2. LOGGING LAMBDA: Formats S3 events into JSON for CloudWatch Metric Filters.
-    const loggingLambdaName = 'Assignment4-LoggingLambda';
-
-    this.loggingLambda = new lambda.Function(this, 'LoggingLambda', {
-      functionName: loggingLambdaName,
-      runtime: lambda.Runtime.PYTHON_3_11,
-      handler: 'logging_lambda.lambda_handler',
-      code: lambda.Code.fromAsset('lambda'),
-      timeout: cdk.Duration.seconds(30),
-      logRetention: logs.RetentionDays.ONE_DAY,
-    })
-
-    this.loggingLambda.addEventSource(new lambdaEventSources.SqsEventSource(props.loggingQueue))
-
-    // Explicit permission to search its own logs for historical size recovery
-    this.loggingLambda.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['logs:FilterLogEvents'],
-      resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/aws/lambda/${loggingLambdaName}:*`],
-    }));
-
-    // 3. CLEANER LAMBDA: Triggered by CloudWatch Alarms to delete the largest file.
+    // 2. CLEANER LAMBDA: Triggered by CloudWatch Alarms to delete the largest file.
     this.cleanerLambda = new lambda.Function(this, 'CleanerLambda', {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'cleaner_lambda.lambda_handler',
@@ -77,11 +68,15 @@ export class LambdaStack extends cdk.Stack {
       }
     })
 
-    props.table.grantReadWriteData(this.cleanerLambda)
-    props.bucket.grantWrite(this.cleanerLambda)
-    props.bucket.grantDelete(this.cleanerLambda)
+    this.cleanerLambda.addPermission('AllowCloudWatchInvocation', {
+      principal: new iam.ServicePrincipal('lambda.alarms.cloudwatch.amazonaws.com'),
+      action: 'lambda:InvokeFunction',
+    });
 
-    // 4. PLOTTING LAMBDA: Generates storage visualization using Matplotlib.
+    props.table.grantReadWriteData(this.cleanerLambda);
+    props.bucket.grantReadWrite(this.cleanerLambda);
+
+    // 3. PLOTTING LAMBDA: Generates storage visualization using Matplotlib.
     this.plotLambda = new lambda.Function(this, 'PlotLambda', {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'plotting_lambda.lambda_handler',
@@ -99,14 +94,14 @@ export class LambdaStack extends cdk.Stack {
     const matplotlibLayer = lambda.LayerVersion.fromLayerVersionArn(
       this,
       'MatplotlibLayer',
-      'arn:aws:lambda:us-west-2:336392948345:layer:AWSSDKPandas-Python311:12'
+      'arn:aws:lambda:us-west-2:770693421928:layer:Klayers-p311-matplotlib:17'
     )
 
     this.plotLambda.addLayers(matplotlibLayer)
     props.table.grantReadData(this.plotLambda)
     props.bucket.grantWrite(this.plotLambda) // Permission to save plot.png
     
-    // 5. API GATEWAY: Exposes the Plotting Lambda to the web.
+    // 4. API GATEWAY: Exposes the Plotting Lambda to the web.
     this.api = new apigateway.RestApi(this, 'PlotApi', {
       restApiName: 'PlotLambdaAPI',
       description: 'API to trigger plot Lambda',
@@ -135,7 +130,7 @@ export class LambdaStack extends cdk.Stack {
         TABLE_NAME: props.table.tableName,
         PLOTTING_API_URL: this.api.url + 'plot'
       },
-      timeout: cdk.Duration.seconds(180) // Long timeout to wait for Alarms
+      timeout: cdk.Duration.seconds(300) // Long timeout to wait for Alarms
     })
 
     props.bucket.grantReadWrite(this.driverLambda)

@@ -130,9 +130,15 @@ export class LambdaStack extends cdk.Stack {
         TABLE_NAME: props.table.tableName,
         PLOTTING_API_URL: this.api.url + 'plot'
       },
+      memorySize: 512, // Higher memory
       timeout: cdk.Duration.seconds(300) // Long timeout to wait for Alarms
     })
 
     props.bucket.grantReadWrite(this.driverLambda)
+
+    this.driverLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:DescribeAlarms'],
+      resources: ['*'],
+    }));
   }
 }

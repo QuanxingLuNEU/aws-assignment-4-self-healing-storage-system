@@ -58,6 +58,7 @@ export class MonitoringStack extends cdk.Stack {
      * If the total exceeds 20 bytes (simulated threshold), the Alarm fires.
      */
     this.alarm = new cloudwatch.Alarm(this, 'TotalSizeAlarm', {
+      alarmName: 'TotalSizeAlarm',
       metric: new cloudwatch.Metric({
         namespace: metricNamespace,
         metricName: metricName,

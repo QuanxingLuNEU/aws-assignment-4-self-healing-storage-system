@@ -23,17 +23,18 @@ s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'us-west-2'))
 def lambda_handler(event, context):
     """
     Handler for Plotting Lambda.
-    Generates a PNG chart of bucket size changes over the last 300 seconds 
+    Generates a PNG chart of bucket size changes over the last 900 seconds 
     and adds a horizontal reference line for the historical maximum size.
     """
-    now = time.time()
-    time_window_start = Decimal(str(now - 300))
-
+    now_ts = time.time()
+    window_size = 900
+    time_window_start_decimal = Decimal(str(now_ts - window_size))
+    
     # 1. Fetch recent records for the current bucket
     # We use the primary Partition Key (bucket_name) and Sort Key (timestamp)
     response = table.query(
         KeyConditionExpression=boto3.dynamodb.conditions.Key('bucket_name').eq(BUCKET_NAME) &
-                               boto3.dynamodb.conditions.Key('timestamp').gte(time_window_start)
+                               boto3.dynamodb.conditions.Key('timestamp').gte(time_window_start_decimal)
     )
     items = response.get('Items', [])
     # Ensure data points are sorted chronologically for the line plot
@@ -43,18 +44,20 @@ def lambda_handler(event, context):
         return {
             'statusCode': 200, 
             'headers': {'Content-Type': 'application/json'},
-            'body': json.dumps('No data points found in the last 10 seconds.')
+            'body': json.dumps('No data points found in the last 900 seconds.')
         }
 
     # Prepare data for Matplotlib
-    timestamps = [datetime.fromtimestamp(float(i['timestamp']), tz=timezone.utc) for i in items]
+    raw_timestamps = [float(i['timestamp']) for i in items]
+    relative_minutes = [(ts - now_ts) / 60 for ts in raw_timestamps]
+
     # DynamoDB numeric types are returned as Decimal; convert to int for plotting
     # Note: Ensure key name matches your tracking lambda (e.g., 'total_size')
     sizes = [int(i['total_size']) if isinstance(i['total_size'], Decimal) else i.get('total_size', 0) for i in items]
 
     # 2. Retrieve the global maximum size recorded (across all buckets)
     # This uses the GSI with 'ScanIndexForward=False' to pick the single largest entry
-    max_size = 0
+    max_size_ever = 0
     try:
         gsi_response = table.query(
             IndexName='size-index', 
@@ -70,18 +73,22 @@ def lambda_handler(event, context):
         print(f"GSI Query for max_size failed: {e}")
 
     # 3. Visualization Logic
-    plt.figure(figsize=(8, 5))
-    plt.plot(timestamps, sizes, marker='o', linestyle='-', color='blue', label=f'Current: {BUCKET_NAME}')
+    plt.figure(figsize=(10, 6))
+    plt.plot(relative_minutes, sizes, marker='o', linestyle='-', color='blue', linewidth=2)
     
     # Add a horizontal dashed line to show the historical peak for context
     plt.axhline(y=max_size_ever, color='red', linestyle='--', label='Global Max Size')
     
-    plt.xlabel('Time (UTC)')
+    plt.xlim(-15, 0)
+    plt.xlabel("Minutes ago")
     plt.ylabel('Size (Bytes)')
-    plt.title('Real-time Storage Monitor (Last 300s)')
+    plt.title('Real-time Storage Monitor (Last 900s)')
     plt.legend(loc='upper left')
     plt.grid(True, linestyle=':', alpha=0.6)
-    plt.tight_layout()
+    try:
+        plt.tight_layout()
+    except:
+        pass
 
     # 4. Output Processing
     # Save the plot to an in-memory byte buffer
